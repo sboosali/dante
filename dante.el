@@ -88,14 +88,39 @@ will be in different GHCi sessions."
 
 (put 'dante-target 'safe-local-variable #'stringp)
 
-(defun dante-project-root ()
+(defcustom dante-force-cabal-project nil
+  "Whether a project root must contain a « cabal.project » file.
+(When non-nil, « .cabal » files are ignored during super-directory traversal
+in determining the project root.)  Customize as a file or directory variable."
+  :group 'dante :safe t
+  :type 'boolean)
+
+(put 'dante-force-cabal-project 'safe-local-variable #'booleanp)
+
+
+
+(cl-defun dante-project-root (&key force-cabal-project)
+
   "Get the root directory for the project.
-If `dante-project-root' is set as a variable, return that,
-otherwise look for a .cabal file, or use the current dir."
+
+[1] If `dante-project-root' is set as a variable, return that.
+[2] Otherwise, look for a dominating « .cabal » file.
+[3] Then unless one is found, use the current directory.
+
+When the :FORCE-CABAL-PROJECT keyword-argument is non-nil,
+or when the `dante-force-cabal-project' configuration variable is non-nil,
+instead look for a dominating « cabal.project » file in [2]
+(ignoring all other file)."
+
   (file-name-as-directory
    (or dante-project-root
        (set (make-local-variable 'dante-project-root)
-            (file-name-directory (or (dante-cabal-find-file) (dante-buffer-file-name)))))))
+            (file-name-directory (or (if (or dante-force-cabal-project force-cabal-project)
+                                         (dante-cabal-find-project-file)
+                                       (dante-cabal-find-file))
+                                     (dante-buffer-file-name)))))))
+
+
 
 (defun dante-repl-by-file (root files cmdline)
   "Return if ROOT / file exists for any file in FILES, return CMDLINE."
@@ -687,11 +712,15 @@ CABAL-FILE rather than trying to locate one."
                    (file-name-nondirectory cabal-file))
                 "")))))
 
+
+
 (defun dante-cabal-find-file (&optional dir)
+
   "Search for package description file upwards starting from DIR.
 If DIR is nil, `default-directory' is used as starting point for
 directory traversal.  Upward traversal is aborted if file owner
 changes.  Uses `dante-cabal-find-pkg-desc' internally."
+
   (let ((use-dir (or dir default-directory)))
     (while (and use-dir (not (file-directory-p use-dir)))
       (setq use-dir (file-name-directory (directory-file-name use-dir))))
@@ -711,6 +740,8 @@ changes.  Uses `dante-cabal-find-pkg-desc' internally."
                 (setq root proot))))
           nil)))))
 
+
+
 (defun dante-cabal-find-pkg-desc (dir &optional allow-multiple)
   "Find a package description file in the directory DIR.
 Returns nil if none or multiple \".cabal\" files were found.  If
@@ -727,6 +758,59 @@ a list is returned instead of failing with a nil result."
     (cond
      ((= (length cabal-files) 1) (car cabal-files)) ;; exactly one candidate found
      (allow-multiple cabal-files) ;; pass-thru multiple candidates
+     (t nil))))
+
+
+
+(defun dante-cabal-find-project-file (&optional dir)
+
+  "Search for the project description file upwards, starting from DIR.
+If DIR is nil, `default-directory' is used as the starting point for
+directory traversal.  Upward traversal is aborted if file owner
+changes.  Uses `dante-cabal-find-project-description' internally."
+
+  (let ((use-dir (or dir default-directory)))
+    
+    (while (and use-dir (not (file-directory-p use-dir)))
+      (setq use-dir (file-name-directory (directory-file-name use-dir))))
+
+    (when use-dir
+      (catch 'found
+        (let ((user (nth 2 (file-attributes use-dir)))
+              ;; Abbreviate, so as to stop when we cross ~/.
+              (root (abbreviate-file-name use-dir)))
+          ;; traverse current dir up to root as long as file owner doesn't change
+          (while (and root (equal user (nth 2 (file-attributes root))))
+            (let ((cabal-file (dante-cabal-find-project-description root)))
+              (when cabal-file
+                (throw 'found cabal-file)))
+            (let ((proot (file-name-directory (directory-file-name root))))
+              (if (equal proot root) ;; fix-point reached?
+                  (throw 'found nil)
+                (setq root proot))))
+          nil)))))
+
+
+
+(defun dante-cabal-find-project-description (dir &optional allow-nonstandard)
+
+  "Find a project description file in the directory `DIR'.
+Returns nil if no \"cabal.project\" file was found.  If
+`ALLOW-NONSTANDARD' is non-nil, matches any \".project\" file,
+returning multiples in a list.
+The expression « (dante-cabal-find-project-description default-directory) » 
+is used to find the project root for compilation (similar
+to the expression « (locate-dominating-file buffer-file-name \"Makefile\") »)."
+
+  (let* ((project-files
+          (cl-remove-if 'file-directory-p
+                        (cl-remove-if-not 'file-exists-p
+                                          (directory-files dir t (if allow-nonstandard
+                                                                     ".\\.project\\'"
+                                                                   "\\`cabal\\.project\\'"))))))
+    (cond
+     ((= (length project-files) 1) (car project-files))
+     (allow-nonstandard project-files)
      (t nil))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
